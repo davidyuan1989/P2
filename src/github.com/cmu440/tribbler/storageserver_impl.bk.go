@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"hash/fnv"
-	"net"
-	"net/http"
 	"net/rpc"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,41 +52,21 @@ type leaseInfo struct {
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 	serverNode := &storageServer{
-		tribbleHash:       make(map[string][]byte),
-		listHash:          make(map[string]*list.List),
-		modification:      make(map[string]bool),
-		modificationList:  make(map[string]bool),
-		leases:            make(map[string]*list.List),
-		leasesList:        make(map[string]*list.List),
-		connections:       make(map[string]*rpc.Client),
-		portmun:           port,
-		nodeID:            nodeID,
-		numNodes:          numNodes,
-		connectionLock:    new(sync.Mutex),
-		leaseLocker:       new(sync.Mutex),
-		leaseListLocker:   new(sync.Mutex),
-		modifyingLock:     new(sync.Mutex),
-		modifyingListLock: new(sync.Mutex),
-		registeredLocker:  new(sync.Mutex),
-		storageLocker:     new(sync.Mutex),
-		listLocker:        new(sync.Mutex),
+		tribbleHash:      make(map[string][]byte),
+		listHash:         make(map[string]*list.List),
+		portmun:          port,
+		nodeID:           nodeID,
+		numNodes:         numNodes,
+		registeredLocker: new(sync.Mutex),
+		storageLocker:    new(sync.Mutex),
+		listLocker:       new(sync.Mutex),
 	}
-	if masterServerHostPort == "" {
+	if masterServerHostPort != "" {
 		serverNode.numNodes = numNodes
 		serverNode.isMaster = true
 		serverNode.nodes = make(map[storagerpc.Node]bool)
-		host := fmt.Sprintf("localhost:%d", port)
-		master := storagerpc.Node{host, nodeID}
+		master := storagerpc.Node{masterServerHostPort, nodeID}
 		serverNode.nodes[master] = true
-
-		rpc.RegisterName("StorageServer", serverNode)
-		rpc.HandleHTTP()
-		l, err := net.Listen("tcp", ":"+strconv.Itoa(port))
-		if err != nil {
-			return nil, err
-		}
-		go http.Serve(l, nil)
-
 	} else {
 		masterNode, _ := rpc.DialHTTP("tcp", masterServerHostPort)
 		var regArgs storagerpc.RegisterArgs
@@ -153,10 +130,7 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
-
-	fmt.Println("start get")
 	if args.WantLease {
-		fmt.Println("want lease:", args.Key)
 		ss.modifyingLock.Lock()
 		if ss.modification[args.Key] == true {
 			reply.Lease.Granted = false
@@ -167,9 +141,7 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 			if lst == nil {
 				lst = list.New()
 			}
-			fmt.Println("put in lease:", args.Key)
 			lst.PushBack(&leaseInfo{args.HostPort, time.Now().Add((storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds) * time.Second)})
-			ss.leases[args.Key] = lst
 			ss.leaseLocker.Unlock()
 		}
 		ss.modifyingLock.Unlock()
@@ -184,8 +156,6 @@ func (ss *storageServer) Get(args *storagerpc.GetArgs, reply *storagerpc.GetRepl
 		reply.Value = value
 		reply.Status = storagerpc.OK
 	}
-
-	fmt.Println("finish get")
 	return nil
 }
 func (ss *storageServer) CheckRange(Key string) bool {
@@ -225,7 +195,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
-	fmt.Println("start getList")
+
 	if args.WantLease {
 		ss.modifyingListLock.Lock()
 		if ss.modificationList[args.Key] == true {
@@ -237,9 +207,7 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 			if lst == nil {
 				lst = list.New()
 			}
-			fmt.Println("put in lease list:", args.Key)
 			lst.PushBack(&leaseInfo{args.HostPort, time.Now().Add((storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds) * time.Second)})
-			ss.leasesList[args.Key] = lst
 			ss.leaseListLocker.Unlock()
 		}
 		ss.modifyingListLock.Unlock()
@@ -259,7 +227,6 @@ func (ss *storageServer) GetList(args *storagerpc.GetArgs, reply *storagerpc.Get
 		}
 		reply.Status = storagerpc.OK
 	}
-	fmt.Println("finish getList")
 	return nil
 
 }
@@ -269,8 +236,6 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
-
-	fmt.Println("start put")
 	ss.modifyingLock.Lock()
 	ss.modification[args.Key] = true
 	ss.modifyingLock.Unlock()
@@ -284,7 +249,6 @@ func (ss *storageServer) Put(args *storagerpc.PutArgs, reply *storagerpc.PutRepl
 	delete(ss.modification, args.Key)
 	ss.modifyingLock.Unlock()
 	reply.Status = storagerpc.OK
-	fmt.Println("finish put")
 	return nil
 }
 
@@ -317,34 +281,18 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 		delete(ss.leases, key)
 		ss.leaseLocker.Unlock()
 	}
-	fmt.Println("finish revoke")
 }
 
 func (ss *storageServer) connectLibStore(key string, info *leaseInfo) {
-	doneCh := make(chan bool)
-	go func() {
-		cli, e := rpc.DialHTTP("tcp", info.address)
-		fmt.Println("revoke ip:", info.address)
-		fmt.Println("revoke key:", key)
-		fmt.Println("error:", e)
-		for e != nil {
-			cli, e = rpc.DialHTTP("tcp", info.address)
-		}
-		var args storagerpc.RevokeLeaseArgs
-		var reply storagerpc.RevokeLeaseReply
-		args.Key = key
-		e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
-		fmt.Println("error:", e)
-		for e != nil {
-			e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
-		}
-		doneCh <- true
-	}()
-	select {
-	case <-doneCh:
-		break
-	case <-time.After(info.expiryTime.Sub(time.Now())):
-		break
+	cli, e := rpc.DialHTTP("tcp", info.address)
+	for e != nil && !time.Now().After(info.expiryTime) {
+		cli, e = rpc.DialHTTP("tcp", info.address)
+	}
+	args := &storagerpc.RevokeLeaseArgs{key}
+	var reply *storagerpc.RevokeLeaseReply
+	e = cli.Call("RemoteLeaseCallbacks.RevokeLease", args, reply)
+	for e != nil && !time.Now().After(info.expiryTime) {
+		e = cli.Call("RemoteLeaseCallbacks.RevokeLease", args, reply)
 	}
 }
 
@@ -353,7 +301,6 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 		reply.Status = storagerpc.WrongServer
 		return nil
 	}
-	fmt.Println("start AppendToList")
 
 	ss.modifyingListLock.Lock()
 	ss.modificationList[args.Key] = true
@@ -382,7 +329,6 @@ func (ss *storageServer) AppendToList(args *storagerpc.PutArgs, reply *storagerp
 	delete(ss.modificationList, args.Key)
 	ss.modifyingListLock.Unlock()
 
-	fmt.Println("finish AppendToList")
 	return nil
 }
 
@@ -392,7 +338,6 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 		return nil
 	}
 
-	fmt.Println("start removelist")
 	ss.modifyingListLock.Lock()
 	ss.modificationList[args.Key] = true
 	ss.modifyingListLock.Unlock()
@@ -402,7 +347,7 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	curList := ss.listHash[args.Key]
 	if curList != nil {
 		for e := curList.Front(); e != nil; e = e.Next() {
-			if e.Value.(string) == args.Value {
+			if e.Value.(string) == args.Key {
 				curList.Remove(e)
 				ss.storageLocker.Unlock()
 				reply.Status = storagerpc.OK
@@ -417,7 +362,6 @@ func (ss *storageServer) RemoveFromList(args *storagerpc.PutArgs, reply *storage
 	delete(ss.modificationList, args.Key)
 	ss.modifyingListLock.Unlock()
 
-	fmt.Println("finish removeList")
 	return nil
 }
 
