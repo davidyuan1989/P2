@@ -3,7 +3,7 @@ package storageserver
 import (
 	"container/list"
 	"encoding/json"
-	"errors"
+	//"errors"
 	"fmt"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
 	"hash/fnv"
@@ -18,26 +18,27 @@ import (
 
 type storageServer struct {
 	// TODO: implement this!
-	tribbleHash       map[string][]byte
-	listHash          map[string]*list.List
-	portmun           int
-	nodeID            uint32
-	isMaster          bool
-	nodes             map[storagerpc.Node]bool
-	modification      map[string]bool
-	modificationList  map[string]bool
-	leases            map[string]*list.List
-	leasesList        map[string]*list.List
-	connections       map[string]*rpc.Client
-	numNodes          int
-	connectionLock    *sync.Mutex
-	leaseLocker       *sync.Mutex
-	leaseListLocker   *sync.Mutex
-	modifyingLock     *sync.Mutex
-	modifyingListLock *sync.Mutex
-	registeredLocker  *sync.Mutex
-	storageLocker     *sync.Mutex
-	listLocker        *sync.Mutex
+	tribbleHash          map[string][]byte
+	listHash             map[string]*list.List
+	portmun              int
+	nodeID               uint32
+	isMaster             bool
+	nodes                map[storagerpc.Node]bool
+	modification         map[string]bool
+	modificationList     map[string]bool
+	leases               map[string]*list.List
+	leasesList           map[string]*list.List
+	connections          map[string]*rpc.Client
+	masterServerHostPort string
+	numNodes             int
+	connectionLock       *sync.Mutex
+	leaseLocker          *sync.Mutex
+	leaseListLocker      *sync.Mutex
+	modifyingLock        *sync.Mutex
+	modifyingListLock    *sync.Mutex
+	registeredLocker     *sync.Mutex
+	storageLocker        *sync.Mutex
+	listLocker           *sync.Mutex
 }
 
 type leaseInfo struct {
@@ -55,33 +56,34 @@ type leaseInfo struct {
 // and should return a non-nil error if the storage server could not be started.
 func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID uint32) (StorageServer, error) {
 	serverNode := &storageServer{
-		tribbleHash:       make(map[string][]byte),
-		listHash:          make(map[string]*list.List),
-		modification:      make(map[string]bool),
-		modificationList:  make(map[string]bool),
-		leases:            make(map[string]*list.List),
-		leasesList:        make(map[string]*list.List),
-		connections:       make(map[string]*rpc.Client),
-		portmun:           port,
-		nodeID:            nodeID,
-		numNodes:          numNodes,
-		connectionLock:    new(sync.Mutex),
-		leaseLocker:       new(sync.Mutex),
-		leaseListLocker:   new(sync.Mutex),
-		modifyingLock:     new(sync.Mutex),
-		modifyingListLock: new(sync.Mutex),
-		registeredLocker:  new(sync.Mutex),
-		storageLocker:     new(sync.Mutex),
-		listLocker:        new(sync.Mutex),
+		tribbleHash:          make(map[string][]byte),
+		listHash:             make(map[string]*list.List),
+		modification:         make(map[string]bool),
+		modificationList:     make(map[string]bool),
+		leases:               make(map[string]*list.List),
+		leasesList:           make(map[string]*list.List),
+		connections:          make(map[string]*rpc.Client),
+		nodes:                make(map[storagerpc.Node]bool),
+		portmun:              port,
+		nodeID:               nodeID,
+		numNodes:             numNodes,
+		masterServerHostPort: masterServerHostPort,
+		connectionLock:       new(sync.Mutex),
+		leaseLocker:          new(sync.Mutex),
+		leaseListLocker:      new(sync.Mutex),
+		modifyingLock:        new(sync.Mutex),
+		modifyingListLock:    new(sync.Mutex),
+		registeredLocker:     new(sync.Mutex),
+		storageLocker:        new(sync.Mutex),
+		listLocker:           new(sync.Mutex),
+		isMaster:             false,
 	}
-	if masterServerHostPort == "" {
-		serverNode.numNodes = numNodes
-		serverNode.isMaster = true
-		serverNode.nodes = make(map[storagerpc.Node]bool)
-		host := fmt.Sprintf("localhost:%d", port)
-		master := storagerpc.Node{host, nodeID}
-		serverNode.nodes[master] = true
 
+	if serverNode.masterServerHostPort == "" {
+		fmt.Println("Master Need Num:", numNodes)
+		fmt.Println("master ID:", nodeID, "master port:", port)
+		serverNode.isMaster = true
+		serverNode.masterServerHostPort = "localhost:" + strconv.Itoa(port)
 		rpc.RegisterName("StorageServer", serverNode)
 		rpc.HandleHTTP()
 		l, err := net.Listen("tcp", ":"+strconv.Itoa(port))
@@ -89,30 +91,45 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 			return nil, err
 		}
 		go http.Serve(l, nil)
-
-	} else {
-		masterNode, _ := rpc.DialHTTP("tcp", masterServerHostPort)
-		var regArgs storagerpc.RegisterArgs
-		var regReply storagerpc.RegisterReply
-		regArgs.ServerInfo.HostPort = fmt.Sprintf("localhost:%d", port)
-		regArgs.ServerInfo.NodeID = nodeID
-		serverNode.isMaster = false
-		for {
-			masterNode.Call("storageServer.RegisterServer", &regArgs, &regReply)
-			if regReply.Status != storagerpc.OK {
-				time.Sleep(1000 * time.Millisecond)
-			} else {
-				break
-			}
-		}
 	}
+	for {
+		client, err := rpc.DialHTTP("tcp", serverNode.masterServerHostPort)
+		if err != nil {
+			return nil, err
+		}
+		args := &storagerpc.RegisterArgs{*&storagerpc.Node{"localhost:" + strconv.Itoa(port), nodeID}}
+		var reply *storagerpc.RegisterReply
+		err = client.Call("StorageServer.RegisterServer", args, &reply)
+		if err != nil {
+			return nil, err
+		}
+		if reply.Status == storagerpc.OK {
+			if !serverNode.isMaster {
+				for _, node := range reply.Servers {
+					serverNode.nodes[node] = true
+				}
+			}
+			break
+		}
+		time.Sleep(time.Duration(1) * time.Second)
+	}
+	if !serverNode.isMaster {
+		fmt.Println("create client listen:", port)
+		serverNode.masterServerHostPort = "localhost:" + strconv.Itoa(port)
+		rpc.RegisterName("StorageServer", serverNode)
+		rpc.HandleHTTP()
+		l, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+		if err != nil {
+			return nil, err
+		}
+		go http.Serve(l, nil)
+	}
+	fmt.Println("finish create, isMaster:", serverNode.isMaster)
 	return serverNode, nil
 }
 
 func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *storagerpc.RegisterReply) error {
-	if !ss.isMaster {
-		return errors.New("Not a master!")
-	}
+	fmt.Println("Register:", args.ServerInfo.NodeID)
 	ss.registeredLocker.Lock()
 	defer ss.registeredLocker.Unlock()
 	ss.nodes[args.ServerInfo] = true
@@ -125,6 +142,7 @@ func (ss *storageServer) RegisterServer(args *storagerpc.RegisterArgs, reply *st
 			i++
 		}
 	} else {
+		fmt.Println("Cur num:", len(ss.nodes), "Need number:", ss.numNodes)
 		reply.Status = storagerpc.NotReady
 	}
 	return nil

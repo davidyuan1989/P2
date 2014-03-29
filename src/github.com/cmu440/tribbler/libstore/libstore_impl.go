@@ -2,13 +2,52 @@ package libstore
 
 import (
 	"errors"
-
 	"github.com/cmu440/tribbler/rpc/storagerpc"
+	"github.com/cmu440/tribbler/rpc/librpc"
+	"strconv"
+	"container/list"
+	"net/rpc"
+	"sort"
+	"time"
+	"fmt"
+	"strings"
 )
 
-type libstore struct {
-	// TODO: implement this!
+type nodearr []storagerpc.Node
+
+func (a nodearr) Len() int {
+	return len(a)
 }
+func (a nodearr) Swap(i, j int) {
+	a[i], a[j] = a[j], a[i]
+	return
+}
+func (a nodearr) Less(i, j int) bool {
+	return a[i].NodeID < a[j].NodeID
+}
+
+type sCacheElem struct {
+	validTill int64
+	str       string
+}
+
+type lCacheElem struct {
+	validTill int64
+	list      []string
+}
+
+type libstore struct {
+	masterServerHostPort string
+	myHostPort           string
+	leaseMode            LeaseMode
+	sCache             map[string]*sCacheElem
+	lCache            map[string]*lCacheElem
+	queries              map[string]*list.List
+	servers              []storagerpc.Node
+	rpcClients           []*rpc.Client
+}
+
+
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
 // is the master storage server's host:port. myHostPort is this Libstore's host:port
@@ -35,29 +74,263 @@ type libstore struct {
 // need to create a brand new HTTP handler to serve the requests (the Libstore may
 // simply reuse the TribServer's HTTP handler since the two run in the same process).
 func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libstore, error) {
-	return nil, errors.New("not implemented")
+	masterServer, err := rpc.DialHTTP("tcp", masterServerHostPort)
+	if err != nil {
+		return nil, errors.New("Could not connect to master server")
+	}
+	getServersArgs := struct{}{}
+	var getServersReply storagerpc.GetServersReply
+	masterServer.Call("StorageServer.GetServers", getServersArgs, &getServersReply)
+	fmt.Println(getServersReply.Status)
+	if getServersReply.Status == storagerpc.NotReady {
+		for i := 0; i < 5; i++ {
+			time.Sleep(1 * time.Second)
+			masterServer.Call("StorageServer.GetServers", getServersArgs, &getServersReply)
+			fmt.Println(getServersReply.Status)
+			if getServersReply.Status == storagerpc.OK {
+				break
+			}
+		}
+	}
+	if getServersReply.Status == storagerpc.NotReady {
+		return nil, nil
+	}
+	servers := getServersReply.Servers
+	ls := &libstore{}
+	ls.masterServerHostPort = masterServerHostPort
+	ls.myHostPort = myHostPort
+	ls.leaseMode = mode
+	if myHostPort=="" {
+		ls.leaseMode = Never
+	}
+	ls.sCache = make(map[string]*sCacheElem)
+	ls.lCache = make(map[string]*lCacheElem)
+	ls.queries = make(map[string]*list.List)
+	ls.servers = getServersReply.Servers
+	sort.Sort(sort.Reverse(nodearr(ls.servers)))
+	ls.rpcClients = make([]*rpc.Client, len(ls.servers))
+	for i := 0; i < len(servers); i++ {
+		ls.rpcClients[i], err = rpc.DialHTTP("tcp", servers[i].HostPort)
+	}
+	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls))
+	if err != nil {
+		return nil, errors.New("Could not register Libstore")
+	}
+	go ls.ClearCache()
+	return ls, nil
 }
 
 func (ls *libstore) Get(key string) (string, error) {
-	return "", errors.New("not implemented")
+	currTime := time.Now().Unix()
+	if sCacheElem, ok := ls.sCache[key]; ok {
+		if sCacheElem.validTill >= currTime {
+			return sCacheElem.str, nil
+		} else {
+			delete(ls.sCache, key)
+		}
+	}
+
+	getArgs := &storagerpc.GetArgs{}
+	getArgs.Key = key
+	getArgs.WantLease = false
+	getArgs.HostPort = ls.myHostPort
+	if ls.leaseMode == Normal {
+		if pastQueries, ok := ls.queries[key]; ok {
+			pastQueries.PushBack(currTime)
+		} else {
+			ls.queries[key] = list.New()
+			ls.queries[key].PushBack(currTime)
+		}
+	   	if queryList, ok := ls.queries[key]; ok {
+			for q := queryList.Front(); q != nil; q = q.Next() {
+				if q.Value.(int64)+storagerpc.QueryCacheSeconds < currTime {
+					queryList.Remove(q)
+				} else {
+					break
+				}
+			}
+			if queryList.Len() >= storagerpc.QueryCacheThresh {
+				getArgs.WantLease = true
+			}
+		}
+	} else if ls.leaseMode == Always {
+		getArgs.WantLease = true
+	}
+
+	hash := ls.GetHash(key)
+	serverID := ls.LocateServer(hash)
+	client := ls.rpcClients[serverID]
+	var getReply storagerpc.GetReply
+	client.Call("StorageServer.Get", getArgs, &getReply)
+	if getReply.Status != storagerpc.OK {
+		return "", errors.New(strconv.Itoa(int(getReply.Status)))
+	}
+	if getReply.Lease.Granted {
+		s := &sCacheElem{}
+		s.validTill = int64(getReply.Lease.ValidSeconds) + time.Now().Unix()
+		s.str = getReply.Value
+		ls.sCache[key] = s
+	}
+	return getReply.Value, nil
 }
 
 func (ls *libstore) Put(key, value string) error {
-	return errors.New("not implemented")
+	putArgs := &storagerpc.PutArgs{}
+	putArgs.Key = key
+	putArgs.Value = value
+	hash := ls.GetHash(key)
+	serverID := ls.LocateServer(hash)
+	client := ls.rpcClients[serverID]
+	var putReply storagerpc.PutReply
+	client.Call("StorageServer.Put", putArgs, &putReply)
+	if putReply.Status != storagerpc.OK {
+		return errors.New(strconv.Itoa(int(putReply.Status)))
+	}
+	return nil
 }
 
 func (ls *libstore) GetList(key string) ([]string, error) {
-	return nil, errors.New("not implemented")
+	currTime := time.Now().Unix()
+	if lCacheElem, ok := ls.lCache[key]; ok {
+		if lCacheElem.validTill >= currTime {
+			return lCacheElem.list, nil
+		} else {
+			delete(ls.lCache, key)
+		}
+	}
+
+	getArgs := &storagerpc.GetArgs{}
+	getArgs.Key = key
+	getArgs.WantLease = false
+	getArgs.HostPort = ls.myHostPort
+	if ls.leaseMode == Normal {
+		if pastQueries, ok := ls.queries[key]; ok {
+			pastQueries.PushBack(currTime)
+		} else {
+			ls.queries[key] = list.New()
+			ls.queries[key].PushBack(currTime)
+		}
+	   	if queryList, ok := ls.queries[key]; ok {
+			for q := queryList.Front(); q != nil; q = q.Next() {
+				if q.Value.(int64)+storagerpc.QueryCacheSeconds < currTime {
+					queryList.Remove(q)
+				} else {
+					break
+				}
+			}
+			if queryList.Len() >= storagerpc.QueryCacheThresh {
+				getArgs.WantLease = true
+			}
+		}
+	} else if ls.leaseMode == Always {
+		getArgs.WantLease = true
+	}
+
+	hash := ls.GetHash(key)
+	serverID := ls.LocateServer(hash)
+	client := ls.rpcClients[serverID]
+	var getListReply storagerpc.GetListReply
+	client.Call("StorageServer.GetList", getArgs, &getListReply)
+	if getListReply.Status != storagerpc.OK {
+		return nil, errors.New(strconv.Itoa(int(getListReply.Status)))
+	}
+	if getListReply.Lease.Granted {
+		l := &lCacheElem{}
+		l.validTill = int64(getListReply.Lease.ValidSeconds) + time.Now().Unix()
+		l.list = getListReply.Value
+		ls.lCache[key] = l
+	}
+	return getListReply.Value, nil
 }
 
 func (ls *libstore) RemoveFromList(key, removeItem string) error {
-	return errors.New("not implemented")
+	putArgs := &storagerpc.PutArgs{}
+	putArgs.Key = key
+	putArgs.Value = removeItem
+	hash := ls.GetHash(key)
+	serverID := ls.LocateServer(hash)
+	client := ls.rpcClients[serverID]
+	var putReply storagerpc.PutReply
+	client.Call("StorageServer.RemoveFromList", putArgs, &putReply)
+	if putReply.Status != storagerpc.OK {
+		return errors.New(strconv.Itoa(int(putReply.Status)))
+	}
+	return nil
 }
 
 func (ls *libstore) AppendToList(key, newItem string) error {
-	return errors.New("not implemented")
+	putArgs := &storagerpc.PutArgs{}
+	putArgs.Key = key
+	putArgs.Value = newItem
+    hash := ls.GetHash(key)
+	serverID := ls.LocateServer(hash)
+	client := ls.rpcClients[serverID]
+	var putReply storagerpc.PutReply
+	client.Call("StorageServer.AppendToList", putArgs, &putReply)
+	if putReply.Status != storagerpc.OK {
+		return errors.New(strconv.Itoa(int(putReply.Status)))
+	}
+	return nil
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	return errors.New("not implemented")
+	if _, ok := ls.sCache[args.Key]; ok {
+		delete(ls.sCache, args.Key)
+		reply.Status = storagerpc.OK
+		return nil
+	}
+	if _, ok := ls.lCache[args.Key]; ok {
+		delete(ls.lCache, args.Key)
+		reply.Status = storagerpc.OK
+		return nil
+	}
+	reply.Status = storagerpc.KeyNotFound
+	return nil
 }
+
+func (ls *libstore) GetHash (key string) uint32 {
+	hash := StoreHash(key)
+	index := strings.Index(":", key)
+	if index!=-1 {
+		hash = StoreHash(key[:index])
+	}	
+	return hash
+}
+
+func (ls *libstore) LocateServer(hash uint32) int {
+	serverID := 0
+	for i := 0; i < len(ls.servers)-1; i++ {
+		if hash < ls.servers[i].NodeID && hash >= ls.servers[i+1].NodeID {
+			serverID = i
+			break
+		}
+	}
+	return serverID
+}
+
+func (ls *libstore) ClearCache() {
+	for {
+		currTime := time.Now().Unix()
+		for k,v := range ls.sCache {
+			if v. validTill < currTime {
+				delete(ls.sCache, k)
+			}
+		}
+		for k,v := range ls.lCache {
+			if v. validTill < currTime {
+				delete(ls.lCache, k)
+			}
+		}
+		for _, queryList := range ls.queries {
+			for q := queryList.Front(); q != nil; q = q.Next() {
+				if q.Value.(int64)+storagerpc.QueryCacheSeconds < currTime {
+					queryList.Remove(q)
+				} else {
+					break
+				}
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
