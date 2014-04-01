@@ -1,24 +1,24 @@
 package tribserver
 
 import (
+	"encoding/json"
 	"errors"
 	"github.com/cmu440/tribbler/libstore"
-	"github.com/cmu440/tribbler/rpc/tribrpc"
 	"github.com/cmu440/tribbler/rpc/storagerpc"
-	"strconv"
-	"time"
+	"github.com/cmu440/tribbler/rpc/tribrpc"
 	"net"
-	"net/rpc"
 	"net/http"
-	"encoding/json"
+	"net/rpc"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 	//"fmt"
 	"math/rand"
 )
 
 type tribServer struct {
-	ls libstore.Libstore
+	ls  libstore.Libstore
 	sID int
 	tID int
 }
@@ -39,7 +39,7 @@ func (a stringarr) Less(i, j int) bool {
 	jslash := strings.Index(a[j], "/")
 	iTimeStamp, _ := strconv.ParseInt(a[i][icolon+1:islash], 10, 64)
 	jTimeStamp, _ := strconv.ParseInt(a[j][jcolon+1:jslash], 10, 64)
-	return iTimeStamp>jTimeStamp
+	return iTimeStamp > jTimeStamp
 }
 
 // NewTribServer creates, starts and returns a new TribServer. masterServerHostPort
@@ -120,7 +120,7 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	// 	targetUserExists := false
 	// 	for i:=0; i<len(subList); i++ {
 	// 		if strings.EqualFold(subList[i], targetUserID) {
-	// 			targetUserExists = true 
+	// 			targetUserExists = true
 	// 			break
 	// 		}
 	// 	}
@@ -130,12 +130,12 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 	// 	}
 	// }
 	err = ts.ls.AppendToList(subKey, targetUserID)
-	if err!=nil {
-		if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.WrongServer) {
+	if err != nil {
+		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.WrongServer) {
 			reply.Status = tribrpc.NoSuchUser
 			return nil
 		}
-		if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.ItemExists) {
+		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.ItemExists) {
 			reply.Status = tribrpc.Exists
 			return nil
 		}
@@ -168,7 +168,7 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 	// targetUserExists := false
 	// for i:=0; i<len(subList); i++ {
 	// 	if strings.EqualFold(subList[i], targetUserID) {
-	// 		targetUserExists = true 
+	// 		targetUserExists = true
 	// 		break
 	// 	}
 	// }
@@ -177,12 +177,12 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 	// 	return nil
 	// }
 	err = ts.ls.RemoveFromList(subKey, targetUserID)
-	if err!=nil {
-		if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.WrongServer) {
+	if err != nil {
+		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.WrongServer) {
 			reply.Status = tribrpc.NoSuchUser
 			return nil
 		}
-		if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.ItemNotFound) {
+		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.ItemNotFound) {
 			reply.Status = tribrpc.NoSuchTargetUser
 			return nil
 		}
@@ -223,7 +223,7 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	timeStamp := time.Now().UnixNano()
 	mTribble, _ := json.Marshal(tribble)
 	tribKey := userID + ":T"
-	tribbleID := userID + ":" + strconv.FormatInt(timeStamp, 10)+"/"+strconv.Itoa(ts.sID)+"."+strconv.Itoa(ts.tID)
+	tribbleID := userID + ":" + strconv.FormatInt(timeStamp, 10) + "/" + strconv.Itoa(ts.sID) + "." + strconv.Itoa(ts.tID)
 	ts.tID++
 	_ = ts.ls.AppendToList(tribKey, tribbleID)
 	// if err != nil {
@@ -306,7 +306,7 @@ func (ts *tribServer) GetTribblesBySubscription(args *tribrpc.GetTribblesArgs, r
 	for _, targetUserID := range subList {
 		tribKey := targetUserID + ":T"
 		tribbleIDs, err := ts.ls.GetList(tribKey)
-		if err == nil && len(tribbleIDs)>0{
+		if err == nil && len(tribbleIDs) > 0 {
 			allTribbleIDs = append(allTribbleIDs, tribbleIDs[:]...)
 		}
 	}
