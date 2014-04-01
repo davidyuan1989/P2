@@ -201,10 +201,10 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	}
 	subKey := userID + ":S"
 	userIDs, err := ts.ls.GetList(subKey)
-	if err != nil {
-		reply.Status = tribrpc.NoSuchUser
-		return nil
-	}
+	// if err != nil {
+	// 	reply.Status = tribrpc.NoSuchUser
+	// 	return nil
+	// }
 	reply.Status = tribrpc.OK
 	reply.UserIDs = userIDs
 	return nil

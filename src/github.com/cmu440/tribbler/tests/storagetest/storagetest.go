@@ -521,6 +521,7 @@ func delayedRevoke(key string, f func() bool) bool {
 	doneCh := make(chan bool)
 	go func() {
 		// put key1 again to trigger a revoke
+		LOGE.Println("Store: start put: new-value")
 		replyP, err = st.Put(key, "new-value")
 		putCh <- true
 	}()
@@ -705,6 +706,7 @@ func testDelayedRevokeWithUpdate1() {
 	// function called during revoke of key1
 	f := func() bool {
 		// put key1, this should block
+		LOGE.Println("Store: start put: newnew-value")
 		replyP, err := st.Put(key1, "newnew-value")
 		if checkErrorStatus(err, replyP.Status, storagerpc.OK) {
 			return true
@@ -719,6 +721,7 @@ func testDelayedRevokeWithUpdate1() {
 			return true
 		}
 		if replyG.Value != "newnew-value" {
+
 			LOGE.Println("FAIL: got wrong value")
 			failCount++
 			return true
@@ -747,6 +750,7 @@ func testDelayedRevokeWithUpdate2() {
 	f := func() bool {
 		ts := time.Now()
 		// put key1, this should block
+		LOGE.Println("Store: start put: newnew-value")
 		replyP, err := st.Put(key1, "newnew-value")
 		if checkErrorStatus(err, replyP.Status, storagerpc.OK) {
 			return true

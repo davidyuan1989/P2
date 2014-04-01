@@ -311,11 +311,11 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 	if isList {
 		ss.leaseListLocker.Lock()
 		list = ss.leasesList[key]
-		ss.leaseListLocker.Unlock()
+		defer ss.leaseListLocker.Unlock()
 	} else {
 		ss.leaseLocker.Lock()
 		list = ss.leases[key]
-		ss.leaseLocker.Unlock()
+		defer ss.leaseLocker.Unlock()
 	}
 	if list == nil {
 		return
@@ -327,13 +327,9 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 		}
 	}
 	if isList {
-		ss.leaseListLocker.Lock()
 		delete(ss.leasesList, key)
-		ss.leaseListLocker.Unlock()
 	} else {
-		ss.leaseLocker.Lock()
 		delete(ss.leases, key)
-		ss.leaseLocker.Unlock()
 	}
 	//fmt.Println.Println("finish revoke")
 }
@@ -341,27 +337,28 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 func (ss *storageServer) connectLibStore(key string, info *leaseInfo) {
 	doneCh := make(chan bool)
 	go func() {
-		cli, e := rpc.DialHTTP("tcp", info.address)
+		cli, _ := rpc.DialHTTP("tcp", info.address)
 		//fmt.Println.Println("revoke ip:", info.address)
 		//fmt.Println.Println("revoke key:", key)
 		//fmt.Println.Println("error:", e)
-		for e != nil {
-			cli, e = rpc.DialHTTP("tcp", info.address)
-		}
+		// for e != nil {
+		// 	cli, e = rpc.DialHTTP("tcp", info.address)
+		// }
 		var args storagerpc.RevokeLeaseArgs
 		var reply storagerpc.RevokeLeaseReply
 		args.Key = key
-		e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
+		cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
 		//fmt.Println.Println("error:", e)
-		for e != nil {
-			e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
-		}
+		// for e != nil {
+		// 	e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
+		// }
 		doneCh <- true
 	}()
 	select {
 	case <-doneCh:
 		break
-	case <-time.After(info.expiryTime.Sub(time.Now())):
+	//case <-time.After(info.expiryTime.Sub(time.Now())):
+	case <-time.After((storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds) * time.Second):
 		break
 	}
 }
