@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"sync"
 )
 
 type nodearr []storagerpc.Node
@@ -46,9 +45,6 @@ type libstore struct {
 	queries              map[string]*list.List
 	servers              []storagerpc.Node
 	rpcClients           []*rpc.Client
-	sCacheLock     *sync.Mutex
-	lCacheLock        *sync.Mutex
-	queriesLock           *sync.Mutex
 }
 
 // NewLibstore creates a new instance of a TribServer's libstore. masterServerHostPort
@@ -116,9 +112,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 	for i := 0; i < len(ls.servers); i++ {
 		ls.rpcClients[i], err = rpc.DialHTTP("tcp", ls.servers[i].HostPort)
 	}
-	ls.sCacheLock = new(sync.Mutex)
-	ls.lCacheLock = new(sync.Mutex)
-	ls.queriesLock = new (sync.Mutex)
 	err = rpc.RegisterName("LeaseCallbacks", librpc.Wrap(ls))
 	if err != nil {
 		return nil, errors.New("Could not register Libstore")
@@ -129,7 +122,6 @@ func NewLibstore(masterServerHostPort, myHostPort string, mode LeaseMode) (Libst
 
 func (ls *libstore) Get(key string) (string, error) {
 	currTime := time.Now().Unix()
-	ls.sCacheLock.Lock()
 	if sCacheElem, ok := ls.sCache[key]; ok {
 		if sCacheElem.validTill >= currTime {
 			return sCacheElem.str, nil
@@ -137,13 +129,12 @@ func (ls *libstore) Get(key string) (string, error) {
 			delete(ls.sCache, key)
 		}
 	}
-	ls.sCacheLock.Unlock()
+
 	getArgs := &storagerpc.GetArgs{}
 	getArgs.Key = key
 	getArgs.WantLease = false
 	getArgs.HostPort = ls.myHostPort
 	if ls.leaseMode == Normal {
-		ls.queriesLock.Lock()
 		if pastQueries, ok := ls.queries[key]; ok {
 			pastQueries.PushBack(currTime)
 		} else {
@@ -162,7 +153,6 @@ func (ls *libstore) Get(key string) (string, error) {
 				getArgs.WantLease = true
 			}
 		}
-		ls.queriesLock.Unlock()
 	} else if ls.leaseMode == Always {
 		getArgs.WantLease = true
 	}
@@ -179,9 +169,7 @@ func (ls *libstore) Get(key string) (string, error) {
 		s := &sCacheElem{}
 		s.validTill = int64(getReply.Lease.ValidSeconds) + time.Now().Unix()
 		s.str = getReply.Value
-		ls.sCacheLock.Lock()
 		ls.sCache[key] = s
-		ls.sCacheLock.Unlock()
 	}
 	return getReply.Value, nil
 }
@@ -203,7 +191,6 @@ func (ls *libstore) Put(key, value string) error {
 
 func (ls *libstore) GetList(key string) ([]string, error) {
 	currTime := time.Now().Unix()
-	ls.lCacheLock.Lock()
 	if lCacheElem, ok := ls.lCache[key]; ok {
 		if lCacheElem.validTill >= currTime {
 			return lCacheElem.list, nil
@@ -211,13 +198,12 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 			delete(ls.lCache, key)
 		}
 	}
-	ls.lCacheLock.Unlock()
+
 	getArgs := &storagerpc.GetArgs{}
 	getArgs.Key = key
 	getArgs.WantLease = false
 	getArgs.HostPort = ls.myHostPort
 	if ls.leaseMode == Normal {
-		ls.queriesLock.Lock()
 		if pastQueries, ok := ls.queries[key]; ok {
 			pastQueries.PushBack(currTime)
 		} else {
@@ -236,7 +222,6 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 				getArgs.WantLease = true
 			}
 		}
-		ls.queriesLock.Unlock()
 	} else if ls.leaseMode == Always {
 		getArgs.WantLease = true
 	}
@@ -253,9 +238,7 @@ func (ls *libstore) GetList(key string) ([]string, error) {
 		l := &lCacheElem{}
 		l.validTill = int64(getListReply.Lease.ValidSeconds) + time.Now().Unix()
 		l.list = getListReply.Value
-		ls.lCacheLock.Lock()
 		ls.lCache[key] = l
-		ls.lCacheLock.Unlock()
 	}
 	return getListReply.Value, nil
 }
@@ -291,20 +274,16 @@ func (ls *libstore) AppendToList(key, newItem string) error {
 }
 
 func (ls *libstore) RevokeLease(args *storagerpc.RevokeLeaseArgs, reply *storagerpc.RevokeLeaseReply) error {
-	ls.sCacheLock.Lock()
 	if _, ok := ls.sCache[args.Key]; ok {
 		delete(ls.sCache, args.Key)
 		reply.Status = storagerpc.OK
 		return nil
 	}
-	ls.sCacheLock.Unlock()
-	ls.lCacheLock.Lock()
 	if _, ok := ls.lCache[args.Key]; ok {
 		delete(ls.lCache, args.Key)
 		reply.Status = storagerpc.OK
 		return nil
 	}
-	ls.lCacheLock.Unlock()
 	reply.Status = storagerpc.KeyNotFound
 	return nil
 }
@@ -335,21 +314,16 @@ func (ls *libstore) LocateServer(hash uint32) int {
 func (ls *libstore) ClearCache() {
 	for {
 		currTime := time.Now().Unix()
-		ls.sCacheLock.Lock()
 		for k, v := range ls.sCache {
 			if v.validTill < currTime {
 				delete(ls.sCache, k)
 			}
 		}
-		ls.sCacheLock.Unlock()
-		ls.lCacheLock.Lock()
 		for k, v := range ls.lCache {
 			if v.validTill < currTime {
 				delete(ls.lCache, k)
 			}
 		}
-		ls.lCacheLock.Unlock()
-		ls.queriesLock.Lock()
 		for _, queryList := range ls.queries {
 			for q := queryList.Front(); q != nil; q = q.Next() {
 				if q.Value.(int64)+storagerpc.QueryCacheSeconds < currTime {
@@ -359,7 +333,6 @@ func (ls *libstore) ClearCache() {
 				}
 			}
 		}
-		ls.queriesLock.Unlock()
 		time.Sleep(1 * time.Second)
 	}
 }
