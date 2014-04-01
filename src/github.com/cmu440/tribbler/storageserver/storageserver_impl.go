@@ -311,11 +311,11 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 	if isList {
 		ss.leaseListLocker.Lock()
 		list = ss.leasesList[key]
-		defer ss.leaseListLocker.Unlock()
+		ss.leaseListLocker.Unlock()
 	} else {
 		ss.leaseLocker.Lock()
 		list = ss.leases[key]
-		defer ss.leaseLocker.Unlock()
+		ss.leaseLocker.Unlock()
 	}
 	if list == nil {
 		return
@@ -327,9 +327,13 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 		}
 	}
 	if isList {
+		ss.leaseListLocker.Lock()
 		delete(ss.leasesList, key)
+		ss.leaseListLocker.Unlock()
 	} else {
+		ss.leaseLocker.Lock()
 		delete(ss.leases, key)
+		ss.leaseLocker.Unlock()
 	}
 	//fmt.Println.Println("finish revoke")
 }
