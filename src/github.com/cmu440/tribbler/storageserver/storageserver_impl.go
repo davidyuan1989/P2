@@ -24,6 +24,7 @@ type storageServer struct {
 	nodeID               uint32
 	isMaster             bool
 	nodes                map[storagerpc.Node]bool
+	callbackConnections  map[string]*rpc.Client
 	modification         map[string]bool
 	modificationList     map[string]bool
 	leases               map[string]*list.List
@@ -39,6 +40,7 @@ type storageServer struct {
 	registeredLocker     *sync.Mutex
 	storageLocker        *sync.Mutex
 	listLocker           *sync.Mutex
+	callbackLocker       *sync.Mutex
 }
 
 type leaseInfo struct {
@@ -76,7 +78,9 @@ func NewStorageServer(masterServerHostPort string, numNodes, port int, nodeID ui
 		registeredLocker:     new(sync.Mutex),
 		storageLocker:        new(sync.Mutex),
 		listLocker:           new(sync.Mutex),
+		callbackLocker:       new(sync.Mutex),
 		isMaster:             false,
+		callbackConnections:  make(map[string]*rpc.Client),
 	}
 
 	if serverNode.masterServerHostPort == "" {
@@ -341,27 +345,22 @@ func (ss *storageServer) revokeLease(key string, isList bool) {
 func (ss *storageServer) connectLibStore(key string, info *leaseInfo) {
 	doneCh := make(chan bool)
 	go func() {
-		cli, _ := rpc.DialHTTP("tcp", info.address)
-		//fmt.Println.Println("revoke ip:", info.address)
-		//fmt.Println.Println("revoke key:", key)
-		//fmt.Println.Println("error:", e)
-		// for e != nil {
-		// 	cli, e = rpc.DialHTTP("tcp", info.address)
-		// }
+		ss.callbackLocker.Lock()
+		cli := ss.callbackConnections[info.address]
+		if cli == nil {
+			cli, _ := rpc.DialHTTP("tcp", info.address)
+			ss.callbackConnections[info.address] = cli
+		}
+		ss.callbackLocker.Unlock()
 		var args storagerpc.RevokeLeaseArgs
 		var reply storagerpc.RevokeLeaseReply
 		args.Key = key
 		cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
-		//fmt.Println.Println("error:", e)
-		// for e != nil {
-		// 	e = cli.Call("LeaseCallbacks.RevokeLease", &args, &reply)
-		// }
 		doneCh <- true
 	}()
 	select {
 	case <-doneCh:
 		break
-	//case <-time.After(info.expiryTime.Sub(time.Now())):
 	case <-time.After((storagerpc.LeaseSeconds + storagerpc.LeaseGuardSeconds) * time.Second):
 		break
 	}

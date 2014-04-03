@@ -34,11 +34,11 @@ func (a stringarr) Swap(i, j int) {
 }
 func (a stringarr) Less(i, j int) bool {
 	icolon := strings.Index(a[i], ":")
-	islash := strings.Index(a[i], "/")
+	//islash := strings.Index(a[i], "/")
 	jcolon := strings.Index(a[j], ":")
-	jslash := strings.Index(a[j], "/")
-	iTimeStamp, _ := strconv.ParseInt(a[i][icolon+1:islash], 10, 64)
-	jTimeStamp, _ := strconv.ParseInt(a[j][jcolon+1:jslash], 10, 64)
+	//jslash := strings.Index(a[j], "/")
+	iTimeStamp, _ := strconv.ParseInt(a[i][icolon+1:], 10, 64)
+	jTimeStamp, _ := strconv.ParseInt(a[j][jcolon+1:], 10, 64)
 	return iTimeStamp > jTimeStamp
 }
 
@@ -201,10 +201,10 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	}
 	subKey := userID + ":S"
 	userIDs, err := ts.ls.GetList(subKey)
-	if err != nil {
-		reply.Status = tribrpc.NoSuchUser
-		return nil
-	}
+	// if err != nil {
+	// 	reply.Status = tribrpc.NoSuchUser
+	// 	return nil
+	// }
 	reply.Status = tribrpc.OK
 	reply.UserIDs = userIDs
 	return nil
@@ -223,14 +223,14 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	timeStamp := time.Now().UnixNano()
 	mTribble, _ := json.Marshal(tribble)
 	tribKey := userID + ":T"
-	tribbleID := userID + ":" + strconv.FormatInt(timeStamp, 10) + "/" + strconv.Itoa(ts.sID) + "." + strconv.Itoa(ts.tID)
+	tribbleID := userID + ":" + strconv.FormatInt(timeStamp, 10) //+ "/" + strconv.Itoa(ts.sID) + "." + strconv.Itoa(ts.tID)
 	ts.tID++
+	_ = ts.ls.Put(tribbleID, string(mTribble))
 	_ = ts.ls.AppendToList(tribKey, tribbleID)
 	// if err != nil {
 	// 	reply.Status = tribrpc.NoSuchUser
 	// 	return nil
 	// }
-	_ = ts.ls.Put(tribbleID, string(mTribble))
 	reply.Status = tribrpc.OK
 	return nil
 }
