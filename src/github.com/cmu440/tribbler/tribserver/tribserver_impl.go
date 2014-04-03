@@ -49,7 +49,7 @@ func (a stringarr) Less(i, j int) bool {
 //
 // For hints on how to properly setup RPC, see the rpc/tribrpc package.
 func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) {
-	ls, err := libstore.NewLibstore(masterServerHostPort, myHostPort, libstore.Never)
+	ls, err := libstore.NewLibstore(masterServerHostPort, myHostPort, libstore.Normal)
 	if err != nil {
 		return nil, errors.New("Could not new libstore")
 	}
@@ -73,8 +73,6 @@ func NewTribServer(masterServerHostPort, myHostPort string) (TribServer, error) 
 func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.CreateUserReply) error {
 	userID := args.UserID
 	userKey := userID + ":"
-	//tribKey := userID + ":T"
-	//subKey := userID + ":S"
 	_, err := ts.ls.Get(userKey)
 	if err == nil {
 		reply.Status = tribrpc.Exists
@@ -85,16 +83,6 @@ func (ts *tribServer) CreateUser(args *tribrpc.CreateUserArgs, reply *tribrpc.Cr
 		reply.Status = tribrpc.Exists
 		return err
 	}
-	// err = ts.ls.Put(tribKey, "")
-	// if err != nil {
-	// 	reply.Status = tribrpc.Exists
-	// 	return err
-	// }
-	// err = ts.ls.Put(subKey, "")
-	// if err != nil {
-	// 	reply.Status = tribrpc.Exists
-	// 	return err
-	// }
 	reply.Status = tribrpc.OK
 	return nil
 }
@@ -115,20 +103,6 @@ func (ts *tribServer) AddSubscription(args *tribrpc.SubscriptionArgs, reply *tri
 		return nil
 	}
 	subKey := userID + ":S"
-	// subList, err := ts.ls.GetList(subKey)
-	// if err == nil {
-	// 	targetUserExists := false
-	// 	for i:=0; i<len(subList); i++ {
-	// 		if strings.EqualFold(subList[i], targetUserID) {
-	// 			targetUserExists = true
-	// 			break
-	// 		}
-	// 	}
-	// 	if targetUserExists {
-	// 		reply.Status = tribrpc.Exists
-	// 		return nil
-	// 	}
-	// }
 	err = ts.ls.AppendToList(subKey, targetUserID)
 	if err != nil {
 		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.WrongServer) {
@@ -160,22 +134,6 @@ func (ts *tribServer) RemoveSubscription(args *tribrpc.SubscriptionArgs, reply *
 		return nil
 	}
 	subKey := userID + ":S"
-	// subList, err := ts.ls.GetList(subKey)
-	// if err != nil {
-	// 	reply.Status = tribrpc.NoSuchUser
-	// 	return nil
-	// }
-	// targetUserExists := false
-	// for i:=0; i<len(subList); i++ {
-	// 	if strings.EqualFold(subList[i], targetUserID) {
-	// 		targetUserExists = true
-	// 		break
-	// 	}
-	// }
-	// if !targetUserExists {
-	// 	reply.Status = tribrpc.NoSuchTargetUser
-	// 	return nil
-	// }
 	err = ts.ls.RemoveFromList(subKey, targetUserID)
 	if err != nil {
 		if errNum, _ := strconv.Atoi(err.Error()); errNum == int(storagerpc.WrongServer) {
@@ -201,10 +159,6 @@ func (ts *tribServer) GetSubscriptions(args *tribrpc.GetSubscriptionsArgs, reply
 	}
 	subKey := userID + ":S"
 	userIDs, err := ts.ls.GetList(subKey)
-	// if err != nil {
-	// 	reply.Status = tribrpc.NoSuchUser
-	// 	return nil
-	// }
 	reply.Status = tribrpc.OK
 	reply.UserIDs = userIDs
 	return nil
@@ -227,10 +181,6 @@ func (ts *tribServer) PostTribble(args *tribrpc.PostTribbleArgs, reply *tribrpc.
 	ts.tID++
 	_ = ts.ls.Put(tribbleID, string(mTribble))
 	_ = ts.ls.AppendToList(tribKey, tribbleID)
-	// if err != nil {
-	// 	reply.Status = tribrpc.NoSuchUser
-	// 	return nil
-	// }
 	reply.Status = tribrpc.OK
 	return nil
 }
@@ -249,24 +199,6 @@ func (ts *tribServer) GetTribbles(args *tribrpc.GetTribblesArgs, reply *tribrpc.
 		reply.Status = tribrpc.OK
 		return nil
 	}
-	// if err!=nil {
-	// 	if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.WrongServer) {
-	// 		reply.Status = tribrpc.NoSuchUser
-	// 		return nil
-	// 	}
-	// 	if errNum, _ := strconv.Atoi(err.Error()); errNum==int(storagerpc.KeyNotFound) {
-	// 		reply.Status = tribrpc.NoSuchUser
-	// 		return nil
-	// 	}
-	// }
-	// tribbleIDs := make([]int64, len(mTribbleIDs))
-	// for i, mTribbleID := range mTribbleIDs {
-	// 	//fmt.Println(mTribbleID)
-	// 	index := strings.Index(mTribbleID, ":")
-	// 	// fmt.Println(index)
-	// 	// fmt.Println(mTribbleID[index:])
-	// 	tribbleIDs[i], _ = strconv.ParseInt(mTribbleID[index+1:], 10, 64)
-	// }
 	sort.Sort(stringarr(tribbleIDs))
 	length := 100
 	if len(tribbleIDs) < 100 {
