@@ -348,7 +348,7 @@ func (ss *storageServer) connectLibStore(key string, info *leaseInfo) {
 		ss.callbackLocker.Lock()
 		cli := ss.callbackConnections[info.address]
 		if cli == nil {
-			cli, _ := rpc.DialHTTP("tcp", info.address)
+			cli, _ = rpc.DialHTTP("tcp", info.address)
 			ss.callbackConnections[info.address] = cli
 		}
 		ss.callbackLocker.Unlock()
